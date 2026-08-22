@@ -1,6 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { Suspense } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
@@ -121,12 +122,12 @@ function Center({ children }: { children: React.ReactNode }) {
 
 function BackButton({ label = "Back to the board" }: { label?: string }) {
   return (
-    <a
+    <Link
       href="/"
-      className="mt-6 inline-block rounded-xl bg-surface-2 px-4 py-2 font-bold transition hover:brightness-125"
+      className="mt-6 inline-block rounded-xl bg-surface-2 px-4 py-3 font-bold transition hover:brightness-125"
     >
       ← {label}
-    </a>
+    </Link>
   );
 }
 

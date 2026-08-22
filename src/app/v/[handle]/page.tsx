@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@convex/_generated/api";
 import { canonicalizeHandle, avatarUrl } from "@/lib/handle";
@@ -63,9 +64,9 @@ export default async function PermalinkPage({
     return (
       <main className="mx-auto max-w-md px-4 pt-24 text-center">
         <h1 className="text-2xl font-black">Not a valid X handle.</h1>
-        <a href="/" className="mt-4 inline-block font-bold text-gold">
+        <Link href="/" className="mt-4 inline-block font-bold text-gold">
           ← back to the board
-        </a>
+        </Link>
       </main>
     );
   }

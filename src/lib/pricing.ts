@@ -27,13 +27,12 @@ export function priceToBeatRank(targetTotalCents: number): number {
 
 /**
  * Price for an EXISTING entry with `myTotalCents` to reach a total that
- * beats `targetTotalCents`. Always at least one increment — a tie does not
- * take the rank.
+ * beats `targetTotalCents`: the first whole increment strictly greater
+ * than the gap (a tie does not take the rank). Always at least one.
  */
 export function boostPrice(myTotalCents: number, targetTotalCents: number): number {
   const gap = Math.max(targetTotalCents - myTotalCents, 0);
-  const units = Math.max(Math.ceil(gap / UNIT_CENTS), 1);
-  return units * UNIT_CENTS;
+  return (Math.floor(gap / UNIT_CENTS) + 1) * UNIT_CENTS;
 }
 
 /**

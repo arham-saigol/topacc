@@ -33,7 +33,7 @@ npm run dev             # Next.js on :3000
 
 `.env.local`:
 
-```
+```text
 NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud
 ```
 

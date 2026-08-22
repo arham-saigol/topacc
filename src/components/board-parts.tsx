@@ -1,7 +1,7 @@
 "use client";
 
+import Link from "next/link";
 import { formatUsd, timeAgo } from "@/lib/format";
-import type { EntryRow } from "@/lib/types";
 
 export function ClaimBar({
   priceToClaimTopCents,
@@ -13,9 +13,9 @@ export function ClaimBar({
   return (
     <header className="sticky top-0 z-40 border-b border-edge bg-bg/85 backdrop-blur">
       <div className="mx-auto flex max-w-2xl items-center justify-between gap-3 px-4 py-3">
-        <a href="/" className="text-lg font-black tracking-tight">
+        <Link href="/" className="text-lg font-black tracking-tight">
           👑 topacc<span className="text-gold">.lol</span>
-        </a>
+        </Link>
         <button
           type="button"
           onClick={onClaim}

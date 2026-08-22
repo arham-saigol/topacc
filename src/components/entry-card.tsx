@@ -3,7 +3,6 @@
 import type { EntryRow } from "@/lib/types";
 import { VerifiedBadge } from "@/lib/types";
 import { formatUsd, timeAgo } from "@/lib/format";
-import { xUrl } from "@/lib/handle";
 import { Avatar } from "./avatar";
 
 /** Click-tracked profile link: counts, then bounces to x.com. */

@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import { priceToBeatRank } from "@/lib/pricing";
-import type { EntryRow } from "@/lib/types";
 import { BidModal, type BidTarget } from "./bid-modal";
 import { HeroCard, EntryRowItem } from "./entry-card";
 import { ActivityFeed, ClaimBar, Pagination, RevenueCounter } from "./board-parts";
@@ -78,22 +77,27 @@ export function Board() {
             <HeroCard
               entry={top}
               claimPriceCents={claimTopPrice}
-              onClaim={(e) => openClaim({ kind: "entry", entry: e })}
+              // Claim buttons challenge the advertised rank with a NEW
+              // entry — passing the incumbent would boost it instead.
+              onClaim={() => openClaim({ kind: "new", suggestedCents: claimTopPrice })}
               siteUrl={siteUrl}
             />
 
             <ol className="space-y-2">
               {pageEntries
                 .filter((e) => e.rank !== 1)
-                .map((entry) => (
-                  <EntryRowItem
-                    key={entry.id}
-                    entry={entry}
-                    claimPriceCents={priceToBeatRank(entry.totalCents)}
-                    onClaim={(e) => openClaim({ kind: "entry", entry: e })}
-                    siteUrl={siteUrl}
-                  />
-                ))}
+                .map((entry) => {
+                  const claimPrice = priceToBeatRank(entry.totalCents);
+                  return (
+                    <EntryRowItem
+                      key={entry.id}
+                      entry={entry}
+                      claimPriceCents={claimPrice}
+                      onClaim={() => openClaim({ kind: "new", suggestedCents: claimPrice })}
+                      siteUrl={siteUrl}
+                    />
+                  );
+                })}
             </ol>
 
             <Pagination

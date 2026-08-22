@@ -16,8 +16,9 @@ export function Avatar({
   size?: number;
   className?: string;
 }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) {
+  // Track WHICH handle failed so a new handle gets a fresh request.
+  const [failedHandle, setFailedHandle] = useState<string | null>(null);
+  if (failedHandle === handle) {
     return (
       <span
         aria-hidden
@@ -31,11 +32,12 @@ export function Avatar({
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
+      key={handle}
       src={avatarUrl(handle)}
       alt={`@${handle} avatar`}
       width={size}
       height={size}
-      onError={() => setFailed(true)}
+      onError={() => setFailedHandle(handle)}
       className={`shrink-0 rounded-full bg-surface object-cover ${className}`}
       style={{ width: size, height: size }}
     />

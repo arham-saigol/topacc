@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CONFIRM_THRESHOLD_CENTS,
   MAX_BID_CENTS,
   UNIT_CENTS,
   boostPrice,
   isValidAmount,
-  priceToBeatRank,
   projectedRank,
 } from "@/lib/pricing";
 import { canonicalizeHandle } from "@/lib/handle";
@@ -45,13 +44,15 @@ export function BidModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ~400ms debounce drives the avatar preview only.
+  // ~400ms debounce drives the avatar preview only — lookup and checkout
+  // always use what is currently typed so edits are never submitted stale.
   useEffect(() => {
     const id = setTimeout(() => setDebounced(handleInput), 400);
     return () => clearTimeout(id);
   }, [handleInput]);
 
-  const handle = useMemo(() => canonicalizeHandle(debounced), [debounced]);
+  const handle = useMemo(() => canonicalizeHandle(handleInput), [handleInput]);
+  const previewHandle = useMemo(() => canonicalizeHandle(debounced), [debounced]);
   // Subject derives ONLY from what's currently typed — editing the handle
   // naturally switches between new-entry and boost mode.
   const subject = useMemo(
@@ -67,8 +68,7 @@ export function BidModal({
       const above = subject.rank !== undefined ? entries[subject.rank - 2] : undefined;
       return boostPrice(subject.totalCents, above?.totalCents ?? subject.totalCents);
     }
-    const top = entries[0];
-    return top ? priceToBeatRank(top.totalCents) : UNIT_CENTS;
+    return UNIT_CENTS;
   }, [subject, entries]);
 
   const effectiveAmount = Math.max(amount, minAmount);
@@ -132,17 +132,57 @@ export function BidModal({
 
   const needsConfirm = effectiveAmount > CONFIRM_THRESHOLD_CENTS;
 
+  // Modal semantics: Escape closes, Tab stays inside, and closing returns
+  // focus to the trigger. Captured during render so autoFocus hasn't moved
+  // it into the dialog yet.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(
+    typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null),
+  );
+  useEffect(() => {
+    const restoreTo = previouslyFocused.current;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !dialogRef.current) return;
+      const focusables = dialogRef.current.querySelectorAll<HTMLElement>(
+        "button, input, [href], [tabindex]:not([tabindex='-1'])",
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      restoreTo?.focus();
+    };
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-4 backdrop-blur-sm sm:items-center"
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bid-modal-heading"
         className="w-full max-w-md rounded-3xl border border-edge bg-surface p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between">
-          <h2 className="text-xl font-extrabold">
+          <h2 id="bid-modal-heading" className="text-xl font-extrabold">
             {isBoost ? `Boost @${subject?.handle}` : "Claim a rank"}
           </h2>
           <button
@@ -161,7 +201,7 @@ export function BidModal({
             X handle
           </span>
           <div className="mt-1 flex items-center gap-2 rounded-2xl border border-edge bg-bg px-3 focus-within:border-gold/60">
-            <AvatarPreview handle={handle} />
+            <AvatarPreview handle={previewHandle} />
             <input
               autoFocus
               inputMode="text"

@@ -35,7 +35,7 @@ export default defineSchema({
     .index("by_entry", ["entryId"])
     .index("by_event_id", ["eventId"])
     .index("by_order_id", ["orderId"])
-    .index("by_status_created", ["status", "createdAt"]),
+    .index("by_status_paid", ["status", "paidAt"]),
 
   profileCache: defineTable({
     handle: v.string(), // canonical

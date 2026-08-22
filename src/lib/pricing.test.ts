@@ -33,6 +33,13 @@ describe("boostPrice", () => {
     expect(boostPrice(500, 1200 - 700)).toBe(500);
   });
 
+  it("charges one increment beyond an exact-multiple gap", () => {
+    // $5 vs a $15 target: paying exactly the $10 gap would only TIE, and a
+    // tie keeps the earlier bidder's rank — so one more increment is due.
+    expect(boostPrice(500, 1500)).toBe(1500);
+    expect(boostPrice(500, 1000)).toBe(1000);
+  });
+
   it("always charges at least one increment", () => {
     // Tied with the target: still must strictly exceed to take the rank.
     expect(boostPrice(1200, 1200)).toBe(500);

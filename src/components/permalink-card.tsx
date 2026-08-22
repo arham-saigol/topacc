@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { EntryRow } from "@/lib/types";
@@ -26,21 +27,21 @@ export function PermalinkCard({
         <Avatar handle={handle} size={72} className="mx-auto" />
         <h1 className="mt-4 text-2xl font-black">@{handle} isn&apos;t ranked yet.</h1>
         <p className="mt-2 text-white/50">Someone could fix that for $5.</p>
-        <a
+        <Link
           href="/"
           className="mt-5 inline-block rounded-xl bg-gold px-5 py-2.5 font-black text-black transition hover:brightness-110"
         >
           Claim @{handle}
-        </a>
+        </Link>
       </main>
     );
   }
 
   return (
     <main className="mx-auto max-w-md px-4 pt-16">
-      <a href="/" className="text-lg font-black tracking-tight">
+      <Link href="/" className="text-lg font-black tracking-tight">
         👑 topacc<span className="text-gold">.lol</span>
-      </a>
+      </Link>
       <section className="mt-6 rounded-3xl border border-edge bg-surface p-6 text-center">
         <div className="text-xs font-bold tracking-[0.2em] text-gold uppercase">
           Rank #{entry.rank ?? "—"} on X

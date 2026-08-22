@@ -38,7 +38,11 @@ async function postWebhook(
   return t.fetch("/api/webhooks/creem", { method: "POST", headers, body });
 }
 
-function checkoutCompletedEvent(paymentId: string, eventId: string): string {
+function checkoutCompletedEvent(
+  paymentId: string,
+  eventId: string,
+  amount = 500,
+): string {
   return JSON.stringify({
     id: eventId,
     eventType: "checkout.completed",
@@ -49,7 +53,7 @@ function checkoutCompletedEvent(paymentId: string, eventId: string): string {
       request_id: paymentId,
       status: "completed",
       metadata: { paymentId },
-      order: { id: `ord_${eventId}`, amount: 500, currency: "USD", status: "paid" },
+      order: { id: `ord_${eventId}`, amount, currency: "USD", status: "paid" },
       customer: { id: "cust_1", email: "buyer@example.com" },
     },
   });
@@ -106,6 +110,30 @@ describe("POST /api/webhooks/creem", () => {
 
     const board = await t.query(api.entries.board, { limit: 10 });
     expect(board).toEqual([]);
+  });
+
+  it("refunds a validly-signed event whose amount mismatches the priced payment", async () => {
+    process.env.CREEM_WEBHOOK_SECRET = SECRET;
+    const t = convexTest(schema, modules);
+    rateLimiterTest.register(t);
+    vi.useFakeTimers({ now: 1_700_000_000_000 });
+
+    // Priced at $10; Creem reports only $5 paid (product price drift).
+    const paymentId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "underpaid",
+      amountCents: 1000,
+      ip: "1.2.3.6",
+    });
+    const underpaid = checkoutCompletedEvent(paymentId, "evt_under", 500);
+    const res = await postWebhook(t, underpaid, await sign(underpaid));
+    expect(res.status).toBe(200); // acked so Creem stops retrying
+
+    const status = await t.query(api.payments.publicPaymentStatus, { paymentId });
+    expect(status?.status).toBe("refunded");
+    const board = await t.query(api.entries.board, { limit: 10 });
+    expect(board).toEqual([]);
+    const stats = await t.query(api.entries.siteStats, {});
+    expect(stats.paidCents).toBe(0);
   });
 
   it("rejects missing or wrong signatures", async () => {

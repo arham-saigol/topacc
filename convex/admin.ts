@@ -10,12 +10,14 @@ import { canonicalizeHandle } from "../src/lib/handle";
  * Exactly two operations: find a handle, remove it from the board.
  */
 async function assertAdmin(ctx: MutationCtx, password: unknown) {
+  // Throttle BEFORE comparing so failed guesses consume the limit —
+  // otherwise wrong passwords are free to brute-force.
+  const limit = await rateLimiter.limit(ctx, "adminAttempt", { throws: false });
+  if (!limit.ok) throw new ConvexError("RATE_LIMITED");
   const expected = env.ADMIN_PASSWORD;
   if (!expected || typeof password !== "string" || password !== expected) {
     throw new ConvexError("UNAUTHORIZED");
   }
-  const limit = await rateLimiter.limit(ctx, "adminAttempt", { throws: false });
-  if (!limit.ok) throw new ConvexError("RATE_LIMITED");
 }
 
 export const findEntry = mutation({

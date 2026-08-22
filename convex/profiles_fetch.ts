@@ -31,7 +31,9 @@ export const enrichEntry = internalAction({
     try {
       // ?fallback=false makes unavatar answer 404 instead of serving a
       // placeholder, so we only cache genuinely resolvable avatars.
-      const res = await fetch(`${unavatarUrl(handle)}?fallback=false`);
+      const res = await fetch(`${unavatarUrl(handle)}?fallback=false`, {
+        signal: AbortSignal.timeout(10_000),
+      });
       if (res.ok) avatarUrl = unavatarUrl(handle);
     } catch {
       // network errors leave avatarUrl null; letter-avatar fallback renders

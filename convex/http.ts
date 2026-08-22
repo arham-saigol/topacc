@@ -128,6 +128,10 @@ const creemWebhook = httpAction(async (ctx, req) => {
       await ctx.runMutation(internal.payments.markPaid, {
         eventId: event.id,
         paymentId,
+        // Provider-reported amount (cents): markPaid verifies it against the
+        // priced payment before crediting anything.
+        paidAmountCents:
+          typeof event.object.order.amount === "number" ? event.object.order.amount : undefined,
         orderId: event.object.order.id,
         customerEmail: event.object.customer?.email,
       });

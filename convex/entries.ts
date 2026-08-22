@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, query, type QueryCtx } from "./_generated/server";
 import { compareEntries } from "../src/lib/pricing";
+import { canonicalizeHandle } from "../src/lib/handle";
 import { ACTIVITY_FETCH_MAX, BOARD_SCAN_CAP } from "./shared";
 
 /** Shape returned by board/byHandle. Rank is 1-based. */
@@ -35,7 +36,11 @@ async function loadRankedActive(ctx: QueryCtx) {
   return top;
 }
 
-async function toRow(ctx: QueryCtx, entry: import("./_generated/dataModel").Doc<"entries">, rank: number) {
+async function toRow(
+  ctx: QueryCtx,
+  entry: import("./_generated/dataModel").Doc<"entries">,
+  rank?: number,
+) {
   const profile = await ctx.db
     .query("profileCache")
     .withIndex("by_handle", (q) => q.eq("handle", entry.handle))
@@ -74,10 +79,18 @@ export const entryByHandle = query({
   args: { handle: v.string() },
   returns: v.union(v.object(entryRow), v.null()),
   handler: async (ctx, args) => {
+    // Load the entry directly so active entries beyond BOARD_SCAN_CAP are
+    // still found; rank comes from the ranked scan when it fits inside it.
+    const handle = canonicalizeHandle(args.handle);
+    if (!handle) return null;
+    const entry = await ctx.db
+      .query("entries")
+      .withIndex("by_handle", (q) => q.eq("handle", handle))
+      .first();
+    if (!entry || entry.status !== "active" || entry.totalCents <= 0) return null;
     const ranked = await loadRankedActive(ctx);
-    const idx = ranked.findIndex((e) => e.handle === args.handle);
-    if (idx === -1) return null;
-    return toRow(ctx, ranked[idx], idx + 1);
+    const idx = ranked.findIndex((e) => e._id === entry._id);
+    return toRow(ctx, entry, idx === -1 ? undefined : idx + 1);
   },
 });
 
@@ -100,17 +113,21 @@ export const activity = query({
     }),
   ),
   handler: async (ctx, args) => {
+    const limit = Math.max(args.limit, 0);
+    // Feed shows latest payment EVENTS; order by paidAt (when the money
+    // landed), not createdAt (when checkout started) — a checkout pending
+    // for hours must not sort behind older bids.
     const recent = await ctx.db
       .query("payments")
-      .withIndex("by_status_created", (q) => q.eq("status", "paid"))
+      .withIndex("by_status_paid", (q) => q.eq("status", "paid"))
       .order("desc")
       .take(ACTIVITY_FETCH_MAX);
     const out = [];
     for (const p of recent) {
+      if (out.length >= limit) break;
       const entry = await ctx.db.get(p.entryId);
       if (!entry || entry.status !== "active") continue;
       out.push({ handle: entry.handle, amountCents: p.amountCents, paidAt: p.paidAt ?? p.createdAt });
-      if (out.length >= args.limit) break;
     }
     return out;
   },

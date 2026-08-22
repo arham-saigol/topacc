@@ -4,7 +4,7 @@ import { internal } from "./_generated/api";
 import { rateLimiter } from "./rateLimiter";
 import { PAYMENT_TTL_MS, PROFILE_TTL_MS } from "./shared";
 import { canonicalizeHandle } from "../src/lib/handle";
-import { UNIT_CENTS } from "../src/lib/pricing";
+import { UNIT_CENTS, isValidAmount } from "../src/lib/pricing";
 
 const paymentStatusValidator = v.union(
   v.literal("pending"),
@@ -32,6 +32,9 @@ export const createPendingPayment = internalMutation({
     // invariant holds for every caller, present and future.
     const handle = canonicalizeHandle(args.handle);
     if (!handle) throw new ConvexError("INVALID_HANDLE");
+    // Shared pricing rule so units and stored fields keep the $5-multiple
+    // invariant even for non-HTTP callers.
+    if (!isValidAmount(args.amountCents)) throw new ConvexError("INVALID_AMOUNT");
 
     const limit = await rateLimiter.limit(ctx, "createCheckout", {
       key: args.ip,
@@ -95,11 +98,17 @@ export const attachCheckout = internalMutation({
 /**
  * Webhook handler for checkout.completed: mark paid and credit the entry,
  * atomically. Idempotent by webhook event id AND by payment state.
+ *
+ * Fulfillment requires an active entry AND a provider-reported amount that
+ * matches what we priced. Anything else (entry removed mid-checkout, price
+ * drift on the provider) reverses the charge via refundCreemPayment instead
+ * of taking money without granting the leaderboard credit.
  */
 export const markPaid = internalMutation({
   args: {
     eventId: v.string(),
     paymentId: v.string(),
+    paidAmountCents: v.optional(v.number()),
     orderId: v.optional(v.string()),
     customerEmail: v.optional(v.string()),
   },
@@ -107,6 +116,7 @@ export const markPaid = internalMutation({
     v.literal("credited"),
     v.literal("already_processed"),
     v.literal("unknown_payment"),
+    v.literal("refunded"),
   ),
   handler: async (ctx, args) => {
     const seenEvent = await ctx.db
@@ -115,12 +125,32 @@ export const markPaid = internalMutation({
       .first();
     if (seenEvent) return "already_processed";
 
-    if (!/^[a-z0-9]+$/.test(args.paymentId)) return "unknown_payment";
-    const payment = await ctx.db.get(args.paymentId as import("./_generated/dataModel").Id<"payments">);
+    const normalizedId = ctx.db.normalizeId("payments", args.paymentId);
+    if (!normalizedId) return "unknown_payment";
+    const payment = await ctx.db.get(normalizedId);
     if (!payment) return "unknown_payment";
     if (payment.status !== "pending") return "already_processed"; // expired/refunded/paid
 
     const now = Date.now();
+    const entry = await ctx.db.get(payment.entryId);
+    // When the webhook reports what was actually charged, it must match
+    // what we priced — a mismatch means provider price drift, not credit.
+    const amountMismatch =
+      typeof args.paidAmountCents === "number" &&
+      (!Number.isInteger(args.paidAmountCents) ||
+        args.paidAmountCents !== payment.amountCents);
+
+    if (!entry || entry.status !== "active" || amountMismatch) {
+      // Unfulfillable: reverse the charge instead of reporting success.
+      await ctx.db.patch(payment._id, { status: "refunded", eventId: args.eventId });
+      if (payment.checkoutId) {
+        await ctx.scheduler.runAfter(0, internal.checkouts.refundCreemPayment, {
+          checkoutId: payment.checkoutId,
+        });
+      }
+      return "refunded";
+    }
+
     await ctx.db.patch(payment._id, {
       status: "paid",
       paidAt: now,
@@ -129,27 +159,22 @@ export const markPaid = internalMutation({
       customerEmail: args.customerEmail,
     });
 
-    const entry = await ctx.db.get(payment.entryId);
-    if (entry && entry.status === "active") {
-      await ctx.db.patch(entry._id, {
-        totalCents: entry.totalCents + payment.amountCents,
-        bidCount: entry.bidCount + 1,
-        lastBidAt: now,
-      });
-    }
+    await ctx.db.patch(entry._id, {
+      totalCents: entry.totalCents + payment.amountCents,
+      bidCount: entry.bidCount + 1,
+      lastBidAt: now,
+    });
     await bumpRevenue(ctx, payment.amountCents);
 
     // Enrich profile data out-of-band so the webhook stays fast.
-    if (entry && entry.status === "active") {
-      const cache = await ctx.db
-        .query("profileCache")
-        .withIndex("by_handle", (q) => q.eq("handle", entry.handle))
-        .first();
-      if (!cache || now - cache.fetchedAt > PROFILE_TTL_MS) {
-        await ctx.scheduler.runAfter(0, internal.profiles_fetch.enrichEntry, {
-          entryId: entry._id,
-        });
-      }
+    const cache = await ctx.db
+      .query("profileCache")
+      .withIndex("by_handle", (q) => q.eq("handle", entry.handle))
+      .first();
+    if (!cache || now - cache.fetchedAt > PROFILE_TTL_MS) {
+      await ctx.scheduler.runAfter(0, internal.profiles_fetch.enrichEntry, {
+        entryId: entry._id,
+      });
     }
     return "credited";
   },
@@ -171,8 +196,11 @@ export const refundPayment = internalMutation({
     if (seenEvent) return "refunded";
 
     let payment = null;
-    if (args.paymentId && /^[a-z0-9]+$/.test(args.paymentId)) {
-      payment = await ctx.db.get(args.paymentId as import("./_generated/dataModel").Id<"payments">);
+    const normalizedId = args.paymentId
+      ? ctx.db.normalizeId("payments", args.paymentId)
+      : null;
+    if (normalizedId) {
+      payment = await ctx.db.get(normalizedId);
     }
     if (!payment && args.orderId) {
       payment = await ctx.db

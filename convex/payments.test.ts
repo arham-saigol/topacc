@@ -5,6 +5,8 @@ import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { BOARD_SCAN_CAP } from "./shared";
+import { UNIT_CENTS } from "../src/lib/pricing";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -191,6 +193,130 @@ describe("click tracking", () => {
     });
     const row = await t.query(api.entries.entryByHandle, { handle: "clicky" });
     expect(row?.clickCount).toBe(2);
+  });
+});
+
+describe("unfulfillable checkouts", () => {
+  it("refunds instead of crediting when the entry was removed after checkout started", async () => {
+    process.env.ADMIN_PASSWORD = "hunter2";
+    try {
+      const t = setup();
+      const paymentId = await t.mutation(internal.payments.createPendingPayment, {
+        handle: "staleacc",
+        amountCents: 500,
+        ip: "8.8.4.1",
+      });
+      const found = await t.mutation(api.admin.findEntry, {
+        password: "hunter2",
+        handle: "staleacc",
+      });
+      await t.mutation(api.admin.removeEntry, { password: "hunter2", entryId: found!.id });
+
+      expect(
+        await t.mutation(internal.payments.markPaid, {
+          eventId: "evt_stale",
+          paymentId,
+          paidAmountCents: 500,
+        }),
+      ).toBe("refunded");
+
+      const status = await t.query(api.payments.publicPaymentStatus, { paymentId });
+      expect(status?.status).toBe("refunded");
+      const board = await t.query(api.entries.board, { limit: 10 });
+      expect(board).toEqual([]);
+      const stats = await t.query(api.entries.siteStats, {});
+      expect(stats.paidCents).toBe(0);
+    } finally {
+      delete process.env.ADMIN_PASSWORD;
+    }
+  });
+
+  it("refunds instead of crediting on a provider-reported amount mismatch", async () => {
+    const t = setup();
+    vi.useFakeTimers({ now: BASE_TIME });
+    // Priced at $10; the webhook reports only $5 was paid.
+    const paymentId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "drifted",
+      amountCents: 1000,
+      ip: "8.8.4.2",
+    });
+    expect(
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "evt_underpaid",
+        paymentId,
+        paidAmountCents: 500,
+      }),
+    ).toBe("refunded");
+
+    const board = await t.query(api.entries.board, { limit: 10 });
+    expect(board).toEqual([]);
+    const stats = await t.query(api.entries.siteStats, {});
+    expect(stats.paidCents).toBe(0);
+  });
+});
+
+describe("activity feed", () => {
+  it("orders by payment completion time, not checkout creation time", async () => {
+    const t = setup();
+    vi.useFakeTimers({ now: BASE_TIME });
+
+    // bbb starts a checkout first but pays last; aaa starts later, pays first.
+    const bbbId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "bbb",
+      amountCents: 500,
+      ip: "9.1.1.1",
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const aaaId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "aaa",
+      amountCents: 1500,
+      ip: "9.1.1.2",
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await t.mutation(internal.payments.markPaid, { eventId: "act_a", paymentId: aaaId });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await t.mutation(internal.payments.markPaid, { eventId: "act_b", paymentId: bbbId });
+
+    const feed = await t.query(api.entries.activity, { limit: 10 });
+    expect(feed.map((f) => f.handle)).toEqual(["bbb", "aaa"]);
+  });
+
+  it("returns nothing for a zero or negative limit", async () => {
+    const t = setup();
+    await pay(t, { handle: "feedme", amountCents: 500, ip: "9.1.2.1", eventId: "act_c" });
+    expect(await t.query(api.entries.activity, { limit: 0 })).toEqual([]);
+    expect(await t.query(api.entries.activity, { limit: -5 })).toEqual([]);
+  });
+});
+
+describe("entryByHandle beyond the ranking cap", () => {
+  it("finds active entries past BOARD_SCAN_CAP and reports them unranked", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < BOARD_SCAN_CAP + 1; i++) {
+        await ctx.db.insert("entries", {
+          handle: `acc${String(i).padStart(3, "0")}`,
+          totalCents: 10_000_000 - i * UNIT_CENTS,
+          bidCount: 1,
+          clickCount: 0,
+          status: "active",
+          createdAt: now,
+          lastBidAt: now,
+        });
+      }
+    });
+
+    const ranked = await t.query(api.entries.entryByHandle, { handle: "acc000" });
+    expect(ranked?.rank).toBe(1);
+    const unranked = await t.query(api.entries.entryByHandle, {
+      handle: `acc${String(BOARD_SCAN_CAP).padStart(3, "0")}`,
+    });
+    expect(unranked?.totalCents).toBeGreaterThan(0);
+    expect(unranked?.rank).toBeUndefined();
+
+    const board = await t.query(api.entries.board, { limit: BOARD_SCAN_CAP + 100 });
+    expect(board.length).toBeLessThanOrEqual(BOARD_SCAN_CAP);
   });
 });
 

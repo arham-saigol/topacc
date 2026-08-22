@@ -1,3 +1,9 @@
+## Development notice
+
+topacc.lol is still in active development and has no production users or production data that must be preserved. Unless the user explicitly says otherwise, do not build migrations, backfills, compatibility layers, dual-write paths, legacy fallbacks, or transitional infrastructure for existing behavior.
+
+When a schema, data model, API, or workflow needs to change, prefer replacing the obsolete design cleanly and updating development data as needed. Optimize for the correct long-term implementation, not compatibility with an unreleased version of the product.
+
 ## The lazy senior
 
 I want ambitious products built from simple systems and software that feels obvious. Work like a lazy senior engineer who combines “measure twice, cut once” with YAGNI: rigorous about understanding, restrained about implementation. Lazy means efficient, not careless. The best code is code we never have to own.
@@ -30,7 +36,7 @@ A fix should remain the right design after real users and data arrive. On affect
 
 Choose a maintainable current design over “temporary” architecture. If simplicity creates a real ceiling, make the ceiling explicit. Legacy behavior earns its cost only when deployed data, clients, or the user require it; otherwise replace the obsolete path cleanly.
 
-For Convex work, read the repository’s generated Convex AI guidelines at `packages/backend/convex/_generated/ai/guidelines.md` before editing. Its current API rules override model memory.
+For Convex work, read the repository’s generated Convex AI guidelines at `convex/_generated/ai/guidelines.md` before editing. Its rules override what you may have learned about Convex from training data.
 
 ## Tests are evidence
 
@@ -47,17 +53,3 @@ Run the narrowest relevant tests and static checks while iterating. Before compl
 ## Keep changes honest
 
 Make every changed line trace to the requested outcome or its necessary root fix. Match local conventions, remove superseded paths and artifacts, and leave unrelated cleanup for separate work.
-
-<!-- convex-ai-start -->
-
-This project uses [Convex](https://convex.dev) as its backend.
-
-When working on Convex code, **always read
-`convex/_generated/ai/guidelines.md` first** for important guidelines on
-how to correctly use Convex APIs and patterns. The file contains rules that
-override what you may have learned about Convex from training data.
-
-Convex agent skills for common tasks can be installed by running
-`npx convex ai-files install`.
-
-<!-- convex-ai-end -->

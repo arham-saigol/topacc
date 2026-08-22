@@ -20,9 +20,11 @@ export default function AdminPage() {
   const [found, setFound] = useState<FoundEntry | null | undefined>(undefined);
   const [message, setMessage] = useState<string | null>(null);
 
-  // Restore the remembered password after mount (client only).
+  // Restore the remembered password after mount (client only; sessionStorage
+  // is unavailable during SSR, so it cannot initialize state directly).
   useEffect(() => {
     const saved = sessionStorage.getItem("topacc-admin");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved) setPassword(saved);
   }, []);
 
@@ -58,14 +60,22 @@ export default function AdminPage() {
       <h1 className="text-xl font-black">🛠 admin</h1>
 
       <form onSubmit={search} className="mt-6 space-y-3">
+        <label className="block sr-only" htmlFor="admin-password">
+          Admin password
+        </label>
         <input
+          id="admin-password"
           type="password"
           placeholder="admin password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           className="w-full rounded-2xl border border-edge bg-bg px-4 py-3 outline-none focus:border-gold/60"
         />
+        <label className="block sr-only" htmlFor="admin-handle">
+          Handle to find
+        </label>
         <input
+          id="admin-handle"
           type="text"
           placeholder="@handle to find"
           value={query}
