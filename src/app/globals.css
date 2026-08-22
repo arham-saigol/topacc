@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0f;
+  --color-surface: #14141c;
+  --color-surface-2: #1d1d29;
+  --color-edge: #2b2b3b;
+  --color-gold: #ffd75e;
+  --color-mint: #4ade80;
+  --font-display: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background: var(--color-bg);
+  color: #f2f2f7;
+  font-family: var(--font-display);
+}
+
+/* Number inputs: hide spinners; the stepper owns incrementing. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
