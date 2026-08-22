@@ -235,7 +235,7 @@ export const publicPaymentStatus = query({
 });
 
 /** Net revenue counter (singleton-ish row; concurrent cold-start races add rows). */
-async function bumpRevenue(ctx: MutationCtx, deltaCents: number) {
+export async function bumpRevenue(ctx: MutationCtx, deltaCents: number) {
   const row = await ctx.db.query("siteStats").first();
   if (!row) {
     await ctx.db.insert("siteStats", { paidCents: Math.max(0, deltaCents) });

@@ -229,9 +229,9 @@ export function BidModal({
         {/* Live projection */}
         {!error && (
           <p className="mt-3 text-sm text-mint">
-            You&apos;d land at{" "}
-            <strong>#{wouldLandAt}</strong> with {formatUsd(projectedTotal)}
-            {!isBoost ? "" : " on @" + (subject?.handle ?? "")}
+            You&apos;d land at <strong>#{wouldLandAt}</strong> with{" "}
+            {formatUsd(projectedTotal)}
+            {isBoost && subject ? ` on @${subject.handle}` : ""}
           </p>
         )}
         {needsConfirm && !confirming && (

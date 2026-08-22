@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import { canonicalizeHandle } from "../src/lib/handle";
+import { bumpRevenue } from "./payments";
 
 /**
  * Launch seeding: create entries with synthetic paid payments so the board
@@ -36,20 +37,23 @@ export const seedBoard = internalMutation({
         }));
       if (existing) continue; // already seeded; never double-count
 
+      // Stagger timestamps so tie-breaks between equal totals are explicit.
+      const occurredAt = now - created * 1000;
       await ctx.db.patch(entryId, {
         totalCents: spec.amountCents,
         bidCount: 1,
-        lastBidAt: now,
+        lastBidAt: occurredAt,
       });
-      // Spread lastBidAt slightly so tie-breaks are deterministic.
       await ctx.db.insert("payments", {
         entryId,
         amountCents: spec.amountCents,
         units: spec.amountCents / 500,
         status: "paid",
-        createdAt: now - created * 1000,
-        paidAt: now - created * 1000,
+        createdAt: occurredAt,
+        paidAt: occurredAt,
       });
+      // Seeded self-bids count as paid payments, like every other dollar.
+      await bumpRevenue(ctx, spec.amountCents);
       created++;
     }
     return created;

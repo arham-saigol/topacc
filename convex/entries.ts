@@ -35,23 +35,21 @@ async function loadRankedActive(ctx: QueryCtx) {
   return top;
 }
 
-async function toRow(
-  ctx: QueryCtx,
-  entry: import("./_generated/dataModel").Doc<"entries">,
-  rank?: number,
-) {
+async function toRow(ctx: QueryCtx, entry: import("./_generated/dataModel").Doc<"entries">, rank: number) {
   const profile = await ctx.db
     .query("profileCache")
     .withIndex("by_handle", (q) => q.eq("handle", entry.handle))
     .first();
+  // Optional fields may be undefined; the validator allows it and JSON
+  // serialization drops them before they reach clients.
   return {
     id: entry._id,
-    ...(rank !== undefined ? { rank } : {}),
+    rank,
     handle: entry.handle,
-    ...(profile?.displayName ? { displayName: profile.displayName } : {}),
-    ...(profile?.bio ? { bio: profile.bio } : {}),
-    ...(profile?.verified === true ? { verified: true } : {}),
-    ...(profile?.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
+    displayName: profile?.displayName,
+    bio: profile?.bio,
+    verified: profile?.verified === true ? true : undefined,
+    avatarUrl: profile?.avatarUrl,
     totalCents: entry.totalCents,
     bidCount: entry.bidCount,
     clickCount: entry.clickCount,

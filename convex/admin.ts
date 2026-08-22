@@ -5,7 +5,8 @@ import { canonicalizeHandle } from "../src/lib/handle";
 
 /**
  * Hidden /admin surface. Password-checked inside Convex (the only trust
- * boundary that matters here), lightly rate-limited against brute force.
+ * boundary that matters here). Successful admin operations are throttled by
+ * a shared rate limit; password strength carries the brute-force weight.
  * Exactly two operations: find a handle, remove it from the board.
  */
 async function assertAdmin(ctx: MutationCtx, password: unknown) {

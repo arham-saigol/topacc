@@ -10,9 +10,12 @@ import { formatUsd } from "@/lib/format";
 function SuccessBody() {
   const ref = useSearchParams().get("ref");
 
+  // Malformed refs must degrade to "not found", never throw inside useQuery.
+  const paymentId =
+    ref && /^[0-9a-z]+$/i.test(ref) ? (ref as Id<"payments">) : null;
   const payment = useQuery(
     api.payments.publicPaymentStatus,
-    ref ? { paymentId: ref as Id<"payments"> } : "skip",
+    paymentId ? { paymentId } : "skip",
   );
 
   if (!ref) {
@@ -23,6 +26,14 @@ function SuccessBody() {
           This page confirms a payment. Start by picking a handle on the board.
         </p>
         <BackButton label="Claim your rank" />
+      </Center>
+    );
+  }
+  if (!paymentId) {
+    return (
+      <Center>
+        <h1 className="text-2xl font-black">Payment not found.</h1>
+        <BackButton />
       </Center>
     );
   }
