@@ -16,12 +16,22 @@ const entries = vi.hoisted((): EntryRow[] =>
   })),
 );
 
+const { mockUseQuery } = vi.hoisted(() => ({
+  mockUseQuery: vi.fn(
+    (
+      _reference: unknown,
+      args: { limit?: number },
+    ): EntryRow[] | { paidCents: number } | unknown[] | undefined => {
+      if (args.limit === 100) return entries;
+      if (args.limit === 8) return [];
+      return { paidCents: 0 };
+    },
+  ),
+}));
+
 vi.mock("convex/react", () => ({
-  useQuery: (_reference: unknown, args: { limit?: number }) => {
-    if (args.limit === 100) return entries;
-    if (args.limit === 8) return [];
-    return { paidCents: 0 };
-  },
+  useQuery: (_reference: unknown, args: { limit?: number }) =>
+    mockUseQuery(_reference, args),
   ConvexProvider: ({ children }: { children: React.ReactNode }) => children,
   ConvexReactClient: class {},
 }));
@@ -30,6 +40,12 @@ import { Board } from "./board";
 
 afterEach(() => {
   cleanup();
+  mockUseQuery.mockReset();
+  mockUseQuery.mockImplementation((_reference: unknown, args: { limit?: number }) => {
+    if (args.limit === 100) return entries;
+    if (args.limit === 8) return [];
+    return { paidCents: 0 };
+  });
   delete process.env.NEXT_PUBLIC_CONVEX_URL;
 });
 
@@ -58,5 +74,43 @@ describe("Board", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: /Pay \$25,000/ })).toBeTruthy();
     expect(MAX_BID_CENTS).toBe(2_500_000);
+  });
+
+  it("does not render the claim bar or open claim checkout when board query is pending", () => {
+    process.env.NEXT_PUBLIC_CONVEX_URL = "https://example.convex.cloud";
+    mockUseQuery.mockImplementation((_reference: unknown, args: { limit?: number }) => {
+      if (args.limit === 100) return undefined;
+      if (args.limit === 8) return [];
+      return { paidCents: 0 };
+    });
+
+    render(<Board />);
+
+    expect(screen.getByText("Loading the board…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Claim top acc/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /toward top/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Be #1 for \$5/i })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("renders $5 claim price when board query resolves to an empty array", () => {
+    process.env.NEXT_PUBLIC_CONVEX_URL = "https://example.convex.cloud";
+    mockUseQuery.mockImplementation((_reference: unknown, args: { limit?: number }) => {
+      if (args.limit === 100) return [];
+      if (args.limit === 8) return [];
+      return { paidCents: 0 };
+    });
+
+    render(<Board />);
+
+    expect(screen.queryByText("Loading the board…")).toBeNull();
+    expect(screen.getByText("The board is empty. Money decides.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Be #1 for $5" })).toBeTruthy();
+    const claimTopBtn = screen.getByRole("button", { name: "Claim top acc for $5" });
+    expect(claimTopBtn).toBeTruthy();
+
+    fireEvent.click(claimTopBtn);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Pay \$5/ })).toBeTruthy();
   });
 });

@@ -7,7 +7,7 @@ import {
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { rateLimiter } from "./rateLimiter";
-import { PAYMENT_TTL_MS, PROFILE_TTL_MS } from "./shared";
+import { MAX_REFUND_ATTEMPTS, PAYMENT_TTL_MS, PROFILE_TTL_MS } from "./shared";
 import { canonicalizeHandle } from "../src/lib/handle";
 import { UNIT_CENTS, isValidAmount } from "../src/lib/pricing";
 
@@ -303,6 +303,14 @@ export const beginRefundAttempt = internalMutation({
     const payment = await ctx.db.get(args.paymentId);
     if (!payment || payment.status !== "refund_pending") return null;
 
+    if (args.attempt > MAX_REFUND_ATTEMPTS) {
+      await ctx.db.patch(payment._id, {
+        refundStatus: "reconciliation_required",
+        refundUpdatedAt: Date.now(),
+      });
+      return null;
+    }
+
     const phase: "request" | "reconcile" =
       payment.refundStatus === "pending" && args.attempt % 6 !== 0
         ? "reconcile"
@@ -419,19 +427,21 @@ export const refundPayment = internalMutation({
       const entry = await ctx.db.get(payment.entryId);
       if (entry) {
         // Ties go to whoever reached a total first (compareEntries), so
-        // lastBidAt must be restored from the payments still paid instead of
-        // pointing at the refunded bid.
-        const remaining = await ctx.db
+        // lastBidAt must be restored to when the newest remaining paid bid
+        // completed instead of pointing at the refunded bid. The composite
+        // index keeps this a bounded single-row read as bids accumulate.
+        const latestPaid = await ctx.db
           .query("payments")
-          .withIndex("by_entry", (q) => q.eq("entryId", entry._id))
-          .collect();
-        const paidAts = remaining
-          .filter((p) => p.status === "paid")
-          .map((p) => p.paidAt ?? p.createdAt);
+          .withIndex("by_entry_status_paid", (q) =>
+            q.eq("entryId", entry._id).eq("status", "paid"),
+          )
+          .order("desc")
+          .first();
         await ctx.db.patch(entry._id, {
           totalCents: Math.max(0, entry.totalCents - payment.amountCents),
-          lastBidAt:
-            paidAts.length > 0 ? Math.min(...paidAts) : entry.lastBidAt,
+          lastBidAt: latestPaid
+            ? (latestPaid.paidAt ?? latestPaid.createdAt)
+            : entry.lastBidAt,
         });
       }
       await bumpRevenue(ctx, -payment.amountCents);

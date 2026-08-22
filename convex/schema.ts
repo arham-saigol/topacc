@@ -51,6 +51,7 @@ export default defineSchema({
     .index("by_event_id", ["eventId"])
     .index("by_order_id", ["orderId"])
     .index("by_transaction_id", ["transactionId"])
+    .index("by_entry_status_paid", ["entryId", "status", "paidAt"])
     .index("by_status_paid", ["status", "paidAt"]),
 
   // Provider reversals are recorded independently so an out-of-order refund

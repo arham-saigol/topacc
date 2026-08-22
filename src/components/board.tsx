@@ -33,8 +33,15 @@ export function Board() {
   const list = entries ?? [];
   const top = list[0];
   // Price for a NEW entrant to take #1 (strictly beat the current total).
-  const claimTopPrice = top ? priceToBeatRank(top.totalCents) : 500;
-  const claimTopCheckout = Math.min(claimTopPrice, MAX_BID_CENTS);
+  const claimTopPrice = top
+    ? priceToBeatRank(top.totalCents)
+    : entries
+      ? 500
+      : undefined;
+  const claimTopCheckout =
+    claimTopPrice !== undefined
+      ? Math.min(claimTopPrice, MAX_BID_CENTS)
+      : undefined;
 
   const visibleList = list.slice(0, tabSize);
   const pageCount = Math.max(1, Math.ceil(visibleList.length / PAGE_SIZE));
@@ -50,16 +57,18 @@ export function Board() {
 
   return (
     <div className="min-h-dvh pb-24">
-      <ClaimBar
-        priceToClaimTopCents={claimTopPrice}
-        onClaim={() =>
-          openClaim({
-            kind: "new",
-            suggestedCents: claimTopCheckout,
-            targetCents: claimTopPrice,
-          })
-        }
-      />
+      {entries && claimTopPrice !== undefined && claimTopCheckout !== undefined && (
+        <ClaimBar
+          priceToClaimTopCents={claimTopPrice}
+          onClaim={() =>
+            openClaim({
+              kind: "new",
+              suggestedCents: claimTopCheckout,
+              targetCents: claimTopPrice,
+            })
+          }
+        />
+      )}
 
       <main className="mx-auto max-w-2xl space-y-5 px-4 pt-5">
         {!entries && (
@@ -82,7 +91,7 @@ export function Board() {
           </section>
         )}
 
-        {top && (
+        {top && claimTopPrice !== undefined && claimTopCheckout !== undefined && (
           <>
             <HeroCard
               entry={top}

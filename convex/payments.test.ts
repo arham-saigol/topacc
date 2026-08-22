@@ -5,7 +5,7 @@ import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { BOARD_SCAN_CAP } from "./shared";
+import { BOARD_SCAN_CAP, MAX_REFUND_ATTEMPTS } from "./shared";
 import { UNIT_CENTS } from "../src/lib/pricing";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -182,9 +182,12 @@ describe("payment lifecycle", () => {
   it("restores the tie-break time when a later partial bid is refunded", async () => {
     const t = setup();
     vi.useFakeTimers({ now: BASE_TIME });
-    await pay(t, { handle: "aaa", amountCents: 1000, ip: "5.6.7.1", eventId: "tie_1" });
-    await vi.advanceTimersByTimeAsync(60_000);
-    // bbb reaches $1000 after aaa, so aaa holds the rank on the tie.
+    // aaa bids twice: $500 at BASE_TIME and $500 at BASE_TIME + 30s
+    await pay(t, { handle: "aaa", amountCents: 500, ip: "5.6.7.1", eventId: "tie_1a" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await pay(t, { handle: "aaa", amountCents: 500, ip: "5.6.7.1", eventId: "tie_1b" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    // bbb reaches $1000 after aaa's second bid (at BASE_TIME + 60s), so aaa holds the rank on the tie.
     await pay(t, { handle: "bbb", amountCents: 1000, ip: "5.6.7.2", eventId: "tie_2" });
     await vi.advanceTimersByTimeAsync(60_000);
     const boostId = await t.mutation(internal.payments.createPendingPayment, {
@@ -205,8 +208,13 @@ describe("payment lifecycle", () => {
       }),
     ).toBe("refunded");
 
-    // Back at $1000 each, aaa still outranks bbb because it got there first,
-    // not last at its refunded bid's timestamp.
+    // With two remaining bids (BASE_TIME and BASE_TIME + 30s), lastBidAt must be
+    // restored to the NEWEST remaining timestamp (BASE_TIME + 30s), not the oldest.
+    const entryA = await t.query(api.entries.entryByHandle, { handle: "aaa" });
+    expect(entryA?.lastBidAt).toBe(BASE_TIME + 30_000);
+    expect(entryA?.totalCents).toBe(1000);
+
+    // Back at $1000 each, aaa still outranks bbb because it got there first (at +30s vs +60s).
     const board = await t.query(api.entries.board, { limit: 10 });
     expect(board.map((e) => e.handle)).toEqual(["aaa", "bbb"]);
     expect(board.map((e) => e.totalCents)).toEqual([1000, 1000]);
@@ -344,6 +352,40 @@ describe("unfulfillable checkouts", () => {
     expect(board).toEqual([]);
     const stats = await t.query(api.entries.siteStats, {});
     expect(stats.paidCents).toBe(0);
+  });
+
+  it("caps refund attempts and marks reconciliation_required when limit is exceeded", async () => {
+    const t = setup();
+    const paymentId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "retrycap",
+      amountCents: 500,
+      ip: "8.8.4.3",
+    });
+    await t.mutation(internal.payments.expirePayment, { paymentId });
+    expect(
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "evt_retrycap",
+        paymentId,
+        currency: "USD",
+        orderId: "ord_retrycap",
+      }),
+    ).toBe("refund_pending");
+
+    const attempt1 = await t.mutation(internal.payments.beginRefundAttempt, {
+      paymentId,
+      attempt: 1,
+    });
+    expect(attempt1).not.toBeNull();
+
+    const exceeded = await t.mutation(internal.payments.beginRefundAttempt, {
+      paymentId,
+      attempt: MAX_REFUND_ATTEMPTS + 1,
+    });
+    expect(exceeded).toBeNull();
+
+    const paymentDoc = await t.run(async (ctx) => ctx.db.get(paymentId));
+    expect(paymentDoc?.status).toBe("refund_pending");
+    expect(paymentDoc?.refundStatus).toBe("reconciliation_required");
   });
 });
 
