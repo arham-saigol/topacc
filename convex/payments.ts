@@ -1,6 +1,11 @@
 import { ConvexError, v } from "convex/values";
-import { internalMutation, query, type MutationCtx } from "./_generated/server";
+import {
+  internalMutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
 import { rateLimiter } from "./rateLimiter";
 import { PAYMENT_TTL_MS, PROFILE_TTL_MS } from "./shared";
 import { canonicalizeHandle } from "../src/lib/handle";
@@ -10,7 +15,13 @@ const paymentStatusValidator = v.union(
   v.literal("pending"),
   v.literal("paid"),
   v.literal("expired"),
+  v.literal("refund_pending"),
   v.literal("refunded"),
+);
+
+const refundResultValidator = v.union(
+  v.literal("refund_pending"),
+  v.literal("reconciliation_required"),
 );
 
 /**
@@ -95,21 +106,87 @@ export const attachCheckout = internalMutation({
   },
 });
 
+async function recordedReversal(
+  ctx: MutationCtx,
+  ids: { paymentId: string; orderId?: string; transactionId?: string },
+) {
+  const byPayment = await ctx.db
+    .query("paymentReversals")
+    .withIndex("by_payment_id", (q) => q.eq("paymentId", ids.paymentId))
+    .first();
+  if (byPayment) return byPayment;
+  if (ids.orderId) {
+    const byOrder = await ctx.db
+      .query("paymentReversals")
+      .withIndex("by_order_id", (q) => q.eq("orderId", ids.orderId))
+      .first();
+    if (byOrder) return byOrder;
+  }
+  if (ids.transactionId) {
+    return await ctx.db
+      .query("paymentReversals")
+      .withIndex("by_transaction_id", (q) =>
+        q.eq("transactionId", ids.transactionId),
+      )
+      .first();
+  }
+  return null;
+}
+
+async function queueRefund(
+  ctx: MutationCtx,
+  payment: Doc<"payments">,
+  refs: {
+    eventId: string;
+    orderId?: string;
+    transactionId?: string;
+  },
+): Promise<"refund_pending" | "reconciliation_required"> {
+  const checkoutId = payment.checkoutId || undefined;
+  const orderId = refs.orderId ?? payment.orderId;
+  const transactionId = refs.transactionId ?? payment.transactionId;
+  const now = Date.now();
+
+  if (!checkoutId && !orderId && !transactionId) {
+    await ctx.db.patch(payment._id, {
+      status: "refund_pending",
+      eventId: refs.eventId,
+      refundStatus: "reconciliation_required",
+      refundAttempts: 0,
+      refundLastError: "No checkout, order, or transaction identifier",
+      refundUpdatedAt: now,
+    });
+    return "reconciliation_required";
+  }
+
+  await ctx.db.patch(payment._id, {
+    status: "refund_pending",
+    eventId: refs.eventId,
+    orderId,
+    transactionId,
+    refundStatus: "scheduled",
+    refundAttempts: 0,
+    refundUpdatedAt: now,
+  });
+  await ctx.scheduler.runAfter(0, internal.checkouts.refundCreemPayment, {
+    paymentId: payment._id,
+    attempt: 1,
+  });
+  return "refund_pending";
+}
+
 /**
- * Webhook handler for checkout.completed: mark paid and credit the entry,
- * atomically. Idempotent by webhook event id AND by payment state.
- *
- * Fulfillment requires an active entry AND a provider-reported amount that
- * matches what we priced. Anything else (entry removed mid-checkout, price
- * drift on the provider) reverses the charge via refundCreemPayment instead
- * of taking money without granting the leaderboard credit.
+ * Webhook handler for checkout.completed: credit a valid payment atomically,
+ * or durably start a refund when the charge cannot be fulfilled.
  */
 export const markPaid = internalMutation({
   args: {
     eventId: v.string(),
     paymentId: v.string(),
     paidAmountCents: v.optional(v.number()),
+    currency: v.optional(v.string()),
     orderId: v.optional(v.string()),
+    transactionId: v.optional(v.string()),
     customerEmail: v.optional(v.string()),
   },
   returns: v.union(
@@ -117,6 +194,7 @@ export const markPaid = internalMutation({
     v.literal("already_processed"),
     v.literal("unknown_payment"),
     v.literal("refunded"),
+    refundResultValidator,
   ),
   handler: async (ctx, args) => {
     const seenEvent = await ctx.db
@@ -129,26 +207,51 @@ export const markPaid = internalMutation({
     if (!normalizedId) return "unknown_payment";
     const payment = await ctx.db.get(normalizedId);
     if (!payment) return "unknown_payment";
-    if (payment.status !== "pending") return "already_processed"; // expired/refunded/paid
+    if (
+      payment.status === "paid" ||
+      payment.status === "refund_pending" ||
+      payment.status === "refunded"
+    ) {
+      return "already_processed";
+    }
+
+    const reversal = await recordedReversal(ctx, {
+      paymentId: args.paymentId,
+      orderId: args.orderId,
+      transactionId: args.transactionId,
+    });
+    if (reversal) {
+      await ctx.db.patch(payment._id, {
+        status: "refunded",
+        eventId: args.eventId,
+        orderId: args.orderId,
+        transactionId: args.transactionId,
+        refundStatus: "succeeded",
+        refundUpdatedAt: Date.now(),
+      });
+      return "refunded";
+    }
 
     const now = Date.now();
     const entry = await ctx.db.get(payment.entryId);
-    // When the webhook reports what was actually charged, it must match
-    // what we priced — a mismatch means provider price drift, not credit.
     const amountMismatch =
       typeof args.paidAmountCents === "number" &&
       (!Number.isInteger(args.paidAmountCents) ||
         args.paidAmountCents !== payment.amountCents);
+    const currencyMismatch = args.currency !== "USD";
 
-    if (!entry || entry.status !== "active" || amountMismatch) {
-      // Unfulfillable: reverse the charge instead of reporting success.
-      await ctx.db.patch(payment._id, { status: "refunded", eventId: args.eventId });
-      if (payment.checkoutId) {
-        await ctx.scheduler.runAfter(0, internal.checkouts.refundCreemPayment, {
-          checkoutId: payment.checkoutId,
-        });
-      }
-      return "refunded";
+    if (
+      payment.status === "expired" ||
+      !entry ||
+      entry.status !== "active" ||
+      amountMismatch ||
+      currencyMismatch
+    ) {
+      return await queueRefund(ctx, payment, {
+        eventId: args.eventId,
+        orderId: args.orderId,
+        transactionId: args.transactionId,
+      });
     }
 
     await ctx.db.patch(payment._id, {
@@ -156,6 +259,7 @@ export const markPaid = internalMutation({
       paidAt: now,
       eventId: args.eventId,
       orderId: args.orderId,
+      transactionId: args.transactionId,
       customerEmail: args.customerEmail,
     });
 
@@ -180,46 +284,145 @@ export const markPaid = internalMutation({
   },
 });
 
-/** Refund/dispute path: subtract from the entry total, floored at 0. */
+/**
+ * Start a durable refund attempt. The next attempt is scheduled before any
+ * provider I/O so an action crash cannot strand a charged payment.
+ */
+export const beginRefundAttempt = internalMutation({
+  args: { paymentId: v.id("payments"), attempt: v.number() },
+  returns: v.union(
+    v.object({
+      checkoutId: v.optional(v.string()),
+      orderId: v.optional(v.string()),
+      transactionId: v.optional(v.string()),
+      phase: v.union(v.literal("request"), v.literal("reconcile")),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const payment = await ctx.db.get(args.paymentId);
+    if (!payment || payment.status !== "refund_pending") return null;
+
+    const phase: "request" | "reconcile" =
+      payment.refundStatus === "pending" && args.attempt % 6 !== 0
+        ? "reconcile"
+        : "request";
+    const retryDelayMs = Math.min(
+      60 * 60_000,
+      60_000 * 2 ** Math.min(Math.max(args.attempt - 1, 0), 6),
+    );
+
+    await ctx.db.patch(payment._id, {
+      refundStatus: "attempting",
+      refundAttempts: args.attempt,
+      refundUpdatedAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(
+      retryDelayMs,
+      internal.checkouts.refundCreemPayment,
+      { paymentId: payment._id, attempt: args.attempt + 1 },
+    );
+
+    return {
+      checkoutId: payment.checkoutId || undefined,
+      orderId: payment.orderId,
+      transactionId: payment.transactionId,
+      phase,
+    };
+  },
+});
+
+/** Persist a provider refund outcome; only succeeded is terminal locally. */
+export const recordRefundOutcome = internalMutation({
+  args: {
+    paymentId: v.id("payments"),
+    outcome: v.union(
+      v.literal("pending"),
+      v.literal("retrying"),
+      v.literal("succeeded"),
+    ),
+    transactionId: v.optional(v.string()),
+    error: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const payment = await ctx.db.get(args.paymentId);
+    if (!payment || payment.status !== "refund_pending") return null;
+
+    await ctx.db.patch(payment._id, {
+      status: args.outcome === "succeeded" ? "refunded" : "refund_pending",
+      transactionId: args.transactionId ?? payment.transactionId,
+      refundStatus: args.outcome,
+      refundLastError: args.error,
+      refundUpdatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/** Refund/dispute path: record first, then subtract a previously credited bid. */
 export const refundPayment = internalMutation({
   args: {
     eventId: v.string(),
     paymentId: v.optional(v.string()),
     orderId: v.optional(v.string()),
+    transactionId: v.optional(v.string()),
   },
-  returns: v.union(v.literal("refunded"), v.literal("ignored")),
+  returns: v.union(v.literal("refunded"), v.literal("recorded")),
   handler: async (ctx, args) => {
     const seenEvent = await ctx.db
-      .query("payments")
+      .query("paymentReversals")
       .withIndex("by_event_id", (q) => q.eq("eventId", args.eventId))
       .first();
     if (seenEvent) return "refunded";
 
-    let payment = null;
+    await ctx.db.insert("paymentReversals", {
+      eventId: args.eventId,
+      paymentId: args.paymentId,
+      orderId: args.orderId,
+      transactionId: args.transactionId,
+      createdAt: Date.now(),
+    });
+
+    let payment: Doc<"payments"> | null = null;
     const normalizedId = args.paymentId
       ? ctx.db.normalizeId("payments", args.paymentId)
       : null;
-    if (normalizedId) {
-      payment = await ctx.db.get(normalizedId);
-    }
+    if (normalizedId) payment = await ctx.db.get(normalizedId);
     if (!payment && args.orderId) {
       payment = await ctx.db
         .query("payments")
         .withIndex("by_order_id", (q) => q.eq("orderId", args.orderId))
         .first();
     }
-    if (!payment || payment.status !== "paid") return "ignored";
-
-    // Persist the event id so redelivered refund events are recognized.
-    await ctx.db.patch(payment._id, { status: "refunded", eventId: args.eventId });
-
-    const entry = await ctx.db.get(payment.entryId);
-    if (entry) {
-      await ctx.db.patch(entry._id, {
-        totalCents: Math.max(0, entry.totalCents - payment.amountCents),
-      });
+    if (!payment && args.transactionId) {
+      payment = await ctx.db
+        .query("payments")
+        .withIndex("by_transaction_id", (q) =>
+          q.eq("transactionId", args.transactionId),
+        )
+        .first();
     }
-    await bumpRevenue(ctx, -payment.amountCents);
+    if (!payment) return "recorded";
+    if (payment.status === "refunded") return "refunded";
+
+    if (payment.status === "paid") {
+      const entry = await ctx.db.get(payment.entryId);
+      if (entry) {
+        await ctx.db.patch(entry._id, {
+          totalCents: Math.max(0, entry.totalCents - payment.amountCents),
+        });
+      }
+      await bumpRevenue(ctx, -payment.amountCents);
+    }
+
+    await ctx.db.patch(payment._id, {
+      status: "refunded",
+      orderId: payment.orderId ?? args.orderId,
+      transactionId: payment.transactionId ?? args.transactionId,
+      refundStatus: "succeeded",
+      refundUpdatedAt: Date.now(),
+    });
     return "refunded";
   },
 });

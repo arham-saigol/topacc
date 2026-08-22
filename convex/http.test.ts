@@ -42,6 +42,7 @@ function checkoutCompletedEvent(
   paymentId: string,
   eventId: string,
   amount = 500,
+  currency: string | null = "USD",
 ): string {
   return JSON.stringify({
     id: eventId,
@@ -53,7 +54,12 @@ function checkoutCompletedEvent(
       request_id: paymentId,
       status: "completed",
       metadata: { paymentId },
-      order: { id: `ord_${eventId}`, amount, currency: "USD", status: "paid" },
+      order: {
+        id: `ord_${eventId}`,
+        amount,
+        currency: currency ?? undefined,
+        status: "paid",
+      },
       customer: { id: "cust_1", email: "buyer@example.com" },
     },
   });
@@ -129,11 +135,33 @@ describe("POST /api/webhooks/creem", () => {
     expect(res.status).toBe(200); // acked so Creem stops retrying
 
     const status = await t.query(api.payments.publicPaymentStatus, { paymentId });
-    expect(status?.status).toBe("refunded");
+    expect(status?.status).toBe("refund_pending");
     const board = await t.query(api.entries.board, { limit: 10 });
     expect(board).toEqual([]);
     const stats = await t.query(api.entries.siteStats, {});
     expect(stats.paidCents).toBe(0);
+  });
+
+  it.each([
+    ["incorrect", "EUR"],
+    ["absent", null],
+  ])("refunds a checkout with %s order currency", async (_label, currency) => {
+    process.env.CREEM_WEBHOOK_SECRET = SECRET;
+    const t = convexTest(schema, modules);
+    rateLimiterTest.register(t);
+
+    const paymentId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: `currency${currency ?? "missing"}`,
+      amountCents: 500,
+      ip: `1.2.4.${currency ? "1" : "2"}`,
+    });
+    const event = checkoutCompletedEvent(paymentId, `evt_currency_${currency ?? "none"}`, 500, currency);
+    const res = await postWebhook(t, event, await sign(event));
+    expect(res.status).toBe(200);
+
+    const status = await t.query(api.payments.publicPaymentStatus, { paymentId });
+    expect(status?.status).toBe("refund_pending");
+    expect(await t.query(api.entries.board, { limit: 10 })).toEqual([]);
   });
 
   it("rejects missing or wrong signatures", async () => {

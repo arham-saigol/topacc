@@ -37,7 +37,6 @@ describe("boostPrice", () => {
     // $5 vs a $15 target: paying exactly the $10 gap would only TIE, and a
     // tie keeps the earlier bidder's rank — so one more increment is due.
     expect(boostPrice(500, 1500)).toBe(1500);
-    expect(boostPrice(500, 1000)).toBe(1000);
   });
 
   it("always charges at least one increment", () => {

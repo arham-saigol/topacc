@@ -17,7 +17,7 @@ import { Avatar } from "./avatar";
 import { convexSiteUrl } from "./providers";
 
 export type BidTarget =
-  | { kind: "new"; suggestedCents: number }
+  | { kind: "new"; suggestedCents: number; targetCents?: number }
   | { kind: "entry"; entry: EntryRow };
 
 /**
@@ -136,6 +136,10 @@ export function BidModal({
   // focus to the trigger. Captured during render so autoFocus hasn't moved
   // it into the dialog yet.
   const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
   const previouslyFocused = useRef<HTMLElement | null>(
     typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null),
   );
@@ -143,7 +147,7 @@ export function BidModal({
     const restoreTo = previouslyFocused.current;
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !dialogRef.current) return;
@@ -166,7 +170,7 @@ export function BidModal({
       document.removeEventListener("keydown", onKeyDown);
       restoreTo?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div
@@ -265,6 +269,15 @@ export function BidModal({
             </button>
           </div>
         </div>
+
+        {target.kind === "new" &&
+          target.targetCents !== undefined &&
+          target.targetCents > MAX_BID_CENTS && (
+            <p className="mt-3 text-xs text-gold">
+              Checkouts are capped at {formatUsd(MAX_BID_CENTS)}. Bid this stage now,
+              then boost the same handle until you take the rank.
+            </p>
+          )}
 
         {/* Live projection */}
         {!error && (

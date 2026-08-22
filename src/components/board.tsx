@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
-import { priceToBeatRank } from "@/lib/pricing";
+import { MAX_BID_CENTS, priceToBeatRank } from "@/lib/pricing";
 import { BidModal, type BidTarget } from "./bid-modal";
 import { HeroCard, EntryRowItem } from "./entry-card";
 import { ActivityFeed, ClaimBar, Pagination, RevenueCounter } from "./board-parts";
@@ -34,11 +34,15 @@ export function Board() {
   const top = list[0];
   // Price for a NEW entrant to take #1 (strictly beat the current total).
   const claimTopPrice = top ? priceToBeatRank(top.totalCents) : 500;
+  const claimTopCheckout = Math.min(claimTopPrice, MAX_BID_CENTS);
 
-  const pageCount =
-    tabSize === 10 ? 1 : Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const visibleList = list.slice(0, tabSize);
+  const pageCount = Math.max(1, Math.ceil(visibleList.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
-  const pageEntries = list.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const pageEntries = visibleList.slice(
+    safePage * PAGE_SIZE,
+    (safePage + 1) * PAGE_SIZE,
+  );
 
   function openClaim(target: BidTarget) {
     setModal(target);
@@ -48,7 +52,13 @@ export function Board() {
     <div className="min-h-dvh pb-24">
       <ClaimBar
         priceToClaimTopCents={claimTopPrice}
-        onClaim={() => openClaim({ kind: "new", suggestedCents: claimTopPrice })}
+        onClaim={() =>
+          openClaim({
+            kind: "new",
+            suggestedCents: claimTopCheckout,
+            targetCents: claimTopPrice,
+          })
+        }
       />
 
       <main className="mx-auto max-w-2xl space-y-5 px-4 pt-5">
@@ -79,7 +89,13 @@ export function Board() {
               claimPriceCents={claimTopPrice}
               // Claim buttons challenge the advertised rank with a NEW
               // entry — passing the incumbent would boost it instead.
-              onClaim={() => openClaim({ kind: "new", suggestedCents: claimTopPrice })}
+              onClaim={() =>
+                openClaim({
+                  kind: "new",
+                  suggestedCents: claimTopCheckout,
+                  targetCents: claimTopPrice,
+                })
+              }
               siteUrl={siteUrl}
             />
 
@@ -93,7 +109,13 @@ export function Board() {
                       key={entry.id}
                       entry={entry}
                       claimPriceCents={claimPrice}
-                      onClaim={() => openClaim({ kind: "new", suggestedCents: claimPrice })}
+                      onClaim={() =>
+                        openClaim({
+                          kind: "new",
+                          suggestedCents: Math.min(claimPrice, MAX_BID_CENTS),
+                          targetCents: claimPrice,
+                        })
+                      }
                       siteUrl={siteUrl}
                     />
                   );

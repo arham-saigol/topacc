@@ -79,6 +79,20 @@ function SuccessBody() {
     );
   }
 
+  if (payment.status === "refund_pending") {
+    return (
+      <Center>
+        <div className="text-5xl">↩️</div>
+        <h1 className="mt-3 text-2xl font-black">Your refund is processing.</h1>
+        <p className="mt-2 text-white/50">
+          This charge could not be fulfilled. We&apos;ll keep reconciling it with
+          the payment provider until the refund is confirmed.
+        </p>
+        <BackButton />
+      </Center>
+    );
+  }
+
   if (payment.status === "refunded") {
     return (
       <Center>

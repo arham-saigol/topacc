@@ -3,6 +3,7 @@
 import type { EntryRow } from "@/lib/types";
 import { VerifiedBadge } from "@/lib/types";
 import { formatUsd, timeAgo } from "@/lib/format";
+import { MAX_BID_CENTS } from "@/lib/pricing";
 import { Avatar } from "./avatar";
 
 /** Click-tracked profile link: counts, then bounces to x.com. */
@@ -79,7 +80,9 @@ export function EntryRowItem({
         onClick={() => onClaim(entry)}
         className="shrink-0 rounded-xl bg-surface-2 px-3 py-2 text-sm font-bold text-gold transition hover:brightness-125 active:scale-95"
       >
-        Claim #{entry.rank} for {formatUsd(claimPriceCents)}
+        {claimPriceCents > MAX_BID_CENTS
+          ? `Bid ${formatUsd(MAX_BID_CENTS)} toward #${entry.rank}`
+          : `Claim #${entry.rank} for ${formatUsd(claimPriceCents)}`}
       </button>
     </li>
   );
@@ -134,7 +137,9 @@ export function HeroCard({
         onClick={() => onClaim(entry)}
         className="mt-4 rounded-xl bg-mint px-5 py-2.5 font-bold text-black transition hover:brightness-110 active:scale-95"
       >
-        Take #1 for {formatUsd(claimPriceCents)}
+        {claimPriceCents > MAX_BID_CENTS
+          ? `Bid ${formatUsd(MAX_BID_CENTS)} toward #1`
+          : `Take #1 for ${formatUsd(claimPriceCents)}`}
       </button>
       <p className="mt-2 text-[11px] text-white/30">
         Ties don&apos;t win — you must strictly beat the total.

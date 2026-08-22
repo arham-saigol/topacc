@@ -37,6 +37,7 @@ async function pay(
   return t.mutation(internal.payments.markPaid, {
     eventId: opts.eventId,
     paymentId,
+    currency: "USD",
   });
 }
 
@@ -83,15 +84,27 @@ describe("payment lifecycle", () => {
     });
 
     expect(
-      await t.mutation(internal.payments.markPaid, { eventId: "evt_x", paymentId }),
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "evt_x",
+        paymentId,
+        currency: "USD",
+      }),
     ).toBe("credited");
     // Same event redelivered.
     expect(
-      await t.mutation(internal.payments.markPaid, { eventId: "evt_x", paymentId }),
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "evt_x",
+        paymentId,
+        currency: "USD",
+      }),
     ).toBe("already_processed");
     // Different event for an already-paid payment.
     expect(
-      await t.mutation(internal.payments.markPaid, { eventId: "evt_y", paymentId }),
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "evt_y",
+        paymentId,
+        currency: "USD",
+      }),
     ).toBe("already_processed");
 
     const board = await t.query(api.entries.board, { limit: 10 });
@@ -110,10 +123,15 @@ describe("payment lifecycle", () => {
     });
 
     await t.mutation(internal.payments.expirePayment, { paymentId });
-    // Late webhook after expiry must not resurrect or credit anything.
+    // A late completed charge must be refunded rather than silently ignored.
     expect(
-      await t.mutation(internal.payments.markPaid, { eventId: "evt_g", paymentId }),
-    ).toBe("already_processed");
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "evt_g",
+        paymentId,
+        currency: "USD",
+        orderId: "ord_expired",
+      }),
+    ).toBe("refund_pending");
 
     const board = await t.query(api.entries.board, { limit: 10 });
     expect(board).toEqual([]);
@@ -159,6 +177,39 @@ describe("payment lifecycle", () => {
     // Fully refunded -> $0 total -> off the board, like any unpaid entry.
     const boardAfter = await t.query(api.entries.board, { limit: 10 });
     expect(boardAfter).toEqual([]);
+  });
+
+  it("records an early reversal and prevents a later completion from crediting", async () => {
+    const t = setup();
+    const paymentId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "reordered",
+      amountCents: 500,
+      ip: "5.5.5.2",
+    });
+
+    expect(
+      await t.mutation(internal.payments.refundPayment, {
+        eventId: "refund_early",
+        orderId: "ord_reordered",
+        transactionId: "tran_reordered",
+      }),
+    ).toBe("recorded");
+    expect(
+      await t.mutation(internal.payments.markPaid, {
+        eventId: "complete_late",
+        paymentId,
+        paidAmountCents: 500,
+        currency: "USD",
+        orderId: "ord_reordered",
+        transactionId: "tran_reordered",
+      }),
+    ).toBe("refunded");
+
+    expect(
+      (await t.query(api.payments.publicPaymentStatus, { paymentId }))?.status,
+    ).toBe("refunded");
+    expect(await t.query(api.entries.board, { limit: 10 })).toEqual([]);
+    expect((await t.query(api.entries.siteStats, {})).paidCents).toBe(0);
   });
 });
 
@@ -210,18 +261,24 @@ describe("unfulfillable checkouts", () => {
         password: "hunter2",
         handle: "staleacc",
       });
-      await t.mutation(api.admin.removeEntry, { password: "hunter2", entryId: found!.id });
+      if (!found || typeof found === "string") throw new Error("entry not found");
+      await t.mutation(api.admin.removeEntry, {
+        password: "hunter2",
+        entryId: found.id,
+      });
 
       expect(
         await t.mutation(internal.payments.markPaid, {
           eventId: "evt_stale",
           paymentId,
           paidAmountCents: 500,
+          currency: "USD",
+          orderId: "ord_stale",
         }),
-      ).toBe("refunded");
+      ).toBe("refund_pending");
 
       const status = await t.query(api.payments.publicPaymentStatus, { paymentId });
-      expect(status?.status).toBe("refunded");
+      expect(status?.status).toBe("refund_pending");
       const board = await t.query(api.entries.board, { limit: 10 });
       expect(board).toEqual([]);
       const stats = await t.query(api.entries.siteStats, {});
@@ -245,8 +302,10 @@ describe("unfulfillable checkouts", () => {
         eventId: "evt_underpaid",
         paymentId,
         paidAmountCents: 500,
+        currency: "USD",
+        orderId: "ord_underpaid",
       }),
-    ).toBe("refunded");
+    ).toBe("refund_pending");
 
     const board = await t.query(api.entries.board, { limit: 10 });
     expect(board).toEqual([]);
@@ -273,9 +332,17 @@ describe("activity feed", () => {
       ip: "9.1.1.2",
     });
     await vi.advanceTimersByTimeAsync(60_000);
-    await t.mutation(internal.payments.markPaid, { eventId: "act_a", paymentId: aaaId });
+    await t.mutation(internal.payments.markPaid, {
+      eventId: "act_a",
+      paymentId: aaaId,
+      currency: "USD",
+    });
     await vi.advanceTimersByTimeAsync(60_000);
-    await t.mutation(internal.payments.markPaid, { eventId: "act_b", paymentId: bbbId });
+    await t.mutation(internal.payments.markPaid, {
+      eventId: "act_b",
+      paymentId: bbbId,
+      currency: "USD",
+    });
 
     const feed = await t.query(api.entries.activity, { limit: 10 });
     expect(feed.map((f) => f.handle)).toEqual(["bbb", "aaa"]);
@@ -329,15 +396,21 @@ describe("admin removal", () => {
 
       await expect(
         t.mutation(api.admin.findEntry, { password: "wrong", handle: "badacc" }),
-      ).rejects.toThrowError(/UNAUTHORIZED/);
+      ).resolves.toBe("UNAUTHORIZED");
 
       const found = await t.mutation(api.admin.findEntry, {
         password: "hunter2",
         handle: "@BadAcc",
       });
-      expect(found?.handle).toBe("badacc");
+      if (!found || typeof found === "string") throw new Error("entry not found");
+      expect(found.handle).toBe("badacc");
 
-      await t.mutation(api.admin.removeEntry, { password: "hunter2", entryId: found!.id });
+      await expect(
+        t.mutation(api.admin.removeEntry, {
+          password: "hunter2",
+          entryId: found.id,
+        }),
+      ).resolves.toBe("removed");
 
       const board = await t.query(api.entries.board, { limit: 10 });
       expect(board).toEqual([]);
@@ -345,6 +418,29 @@ describe("admin removal", () => {
       expect(activity).toEqual([]);
       const stats = await t.query(api.entries.siteStats, {});
       expect(stats.paidCents).toBe(500); // money still counted; entry just hidden
+    } finally {
+      delete process.env.ADMIN_PASSWORD;
+    }
+  });
+
+  it("persists wrong-password attempts until the shared limit is reached", async () => {
+    process.env.ADMIN_PASSWORD = "hunter2";
+    try {
+      const t = setup();
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await expect(
+          t.mutation(api.admin.findEntry, {
+            password: "wrong",
+            handle: "anything",
+          }),
+        ).resolves.toBe("UNAUTHORIZED");
+      }
+      await expect(
+        t.mutation(api.admin.findEntry, {
+          password: "hunter2",
+          handle: "anything",
+        }),
+      ).resolves.toBe("RATE_LIMITED");
     } finally {
       delete process.env.ADMIN_PASSWORD;
     }

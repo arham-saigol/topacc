@@ -37,6 +37,11 @@ export default function AdminPage() {
     try {
       sessionStorage.setItem("topacc-admin", password);
       const result = await findEntry({ password, handle: query });
+      if (result === "UNAUTHORIZED" || result === "RATE_LIMITED") {
+        setFound(undefined);
+        setMessage(result === "UNAUTHORIZED" ? "Wrong admin password." : "Too many attempts. Try again later.");
+        return;
+      }
       setFound(result ?? null);
     } catch (err) {
       setFound(undefined);
@@ -47,8 +52,16 @@ export default function AdminPage() {
   async function remove() {
     if (!found) return;
     try {
-      await removeEntry({ password, entryId: found.id });
-      setMessage(`@${found.handle} removed from the board.`);
+      const result = await removeEntry({ password, entryId: found.id });
+      if (result === "UNAUTHORIZED" || result === "RATE_LIMITED") {
+        setMessage(result === "UNAUTHORIZED" ? "Wrong admin password." : "Too many attempts. Try again later.");
+        return;
+      }
+      setMessage(
+        result === "removed"
+          ? `@${found.handle} removed from the board.`
+          : "Entry was already removed.",
+      );
       setFound(undefined);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Failed to remove");

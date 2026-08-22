@@ -23,19 +23,49 @@ export default defineSchema({
       v.literal("pending"),
       v.literal("paid"),
       v.literal("expired"),
+      v.literal("refund_pending"),
       v.literal("refunded"),
     ),
     checkoutId: v.optional(v.string()),
     orderId: v.optional(v.string()),
-    eventId: v.optional(v.string()), // webhook id — idempotency key
+    transactionId: v.optional(v.string()),
+    eventId: v.optional(v.string()), // completion webhook id — idempotency key
     customerEmail: v.optional(v.string()),
     createdAt: v.number(),
     paidAt: v.optional(v.number()),
+    refundStatus: v.optional(
+      v.union(
+        v.literal("scheduled"),
+        v.literal("attempting"),
+        v.literal("pending"),
+        v.literal("retrying"),
+        v.literal("reconciliation_required"),
+        v.literal("succeeded"),
+      ),
+    ),
+    refundAttempts: v.optional(v.number()),
+    refundLastError: v.optional(v.string()),
+    refundUpdatedAt: v.optional(v.number()),
   })
     .index("by_entry", ["entryId"])
     .index("by_event_id", ["eventId"])
     .index("by_order_id", ["orderId"])
+    .index("by_transaction_id", ["transactionId"])
     .index("by_status_paid", ["status", "paidAt"]),
+
+  // Provider reversals are recorded independently so an out-of-order refund
+  // or dispute cannot be lost before its completion webhook identifies payment.
+  paymentReversals: defineTable({
+    eventId: v.string(),
+    paymentId: v.optional(v.string()),
+    orderId: v.optional(v.string()),
+    transactionId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_event_id", ["eventId"])
+    .index("by_payment_id", ["paymentId"])
+    .index("by_order_id", ["orderId"])
+    .index("by_transaction_id", ["transactionId"]),
 
   profileCache: defineTable({
     handle: v.string(), // canonical

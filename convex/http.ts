@@ -86,7 +86,17 @@ type CreemWebhookEvent = {
     id?: string;
     request_id?: string;
     metadata?: Record<string, unknown>;
-    order?: { id?: string; amount?: number; status?: string };
+    status?: string;
+    order?: {
+      id?: string;
+      amount?: number;
+      currency?: string;
+      status?: string;
+      transaction?: string;
+    };
+    transaction?:
+      | string
+      | { id?: string; status?: string; order?: string | null };
     customer?: { email?: string };
     checkout?: { request_id?: string };
   };
@@ -132,7 +142,9 @@ const creemWebhook = httpAction(async (ctx, req) => {
         // priced payment before crediting anything.
         paidAmountCents:
           typeof event.object.order.amount === "number" ? event.object.order.amount : undefined,
+        currency: event.object.order.currency,
         orderId: event.object.order.id,
+        transactionId: event.object.order.transaction,
         customerEmail: event.object.customer?.email,
       });
       break;
@@ -140,10 +152,20 @@ const creemWebhook = httpAction(async (ctx, req) => {
     case "refund.created":
     case "dispute.created": {
       if (!event.id) break;
+      // A refund is terminal only when Creem says it succeeded. Disputes are
+      // terminal for fulfillment as soon as they are opened.
+      if (event.eventType === "refund.created" && event.object?.status !== "succeeded") {
+        break;
+      }
+      const transaction = event.object?.transaction;
       await ctx.runMutation(internal.payments.refundPayment, {
         eventId: event.id,
         paymentId: event.object?.checkout?.request_id,
-        orderId: event.object?.order?.id,
+        orderId:
+          event.object?.order?.id ??
+          (typeof transaction === "object" ? transaction.order ?? undefined : undefined),
+        transactionId:
+          typeof transaction === "string" ? transaction : transaction?.id,
       });
       break;
     }

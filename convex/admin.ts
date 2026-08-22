@@ -1,4 +1,4 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { mutation, type MutationCtx, env } from "./_generated/server";
 import { rateLimiter } from "./rateLimiter";
 import { canonicalizeHandle } from "../src/lib/handle";
@@ -9,15 +9,19 @@ import { canonicalizeHandle } from "../src/lib/handle";
  * a shared rate limit; password strength carries the brute-force weight.
  * Exactly two operations: find a handle, remove it from the board.
  */
-async function assertAdmin(ctx: MutationCtx, password: unknown) {
-  // Throttle BEFORE comparing so failed guesses consume the limit —
-  // otherwise wrong passwords are free to brute-force.
+async function adminError(
+  ctx: MutationCtx,
+  password: unknown,
+): Promise<"RATE_LIMITED" | "UNAUTHORIZED" | null> {
+  // Return failures instead of throwing: a throw would roll back the rate
+  // limiter component write in this mutation and make wrong guesses free.
   const limit = await rateLimiter.limit(ctx, "adminAttempt", { throws: false });
-  if (!limit.ok) throw new ConvexError("RATE_LIMITED");
+  if (!limit.ok) return "RATE_LIMITED";
   const expected = env.ADMIN_PASSWORD;
   if (!expected || typeof password !== "string" || password !== expected) {
-    throw new ConvexError("UNAUTHORIZED");
+    return "UNAUTHORIZED";
   }
+  return null;
 }
 
 export const findEntry = mutation({
@@ -30,10 +34,13 @@ export const findEntry = mutation({
       bidCount: v.number(),
       status: v.string(),
     }),
+    v.literal("RATE_LIMITED"),
+    v.literal("UNAUTHORIZED"),
     v.null(),
   ),
   handler: async (ctx, args) => {
-    await assertAdmin(ctx, args.password);
+    const error = await adminError(ctx, args.password);
+    if (error) return error;
     const handle = canonicalizeHandle(args.handle);
     if (!handle) return null;
     const entry = await ctx.db
@@ -53,12 +60,18 @@ export const findEntry = mutation({
 
 export const removeEntry = mutation({
   args: { password: v.string(), entryId: v.id("entries") },
-  returns: v.null(),
+  returns: v.union(
+    v.literal("removed"),
+    v.literal("not_found"),
+    v.literal("RATE_LIMITED"),
+    v.literal("UNAUTHORIZED"),
+  ),
   handler: async (ctx, args) => {
-    await assertAdmin(ctx, args.password);
+    const error = await adminError(ctx, args.password);
+    if (error) return error;
     const entry = await ctx.db.get(args.entryId);
-    if (!entry || entry.status === "removed") return null;
+    if (!entry || entry.status === "removed") return "not_found";
     await ctx.db.patch(entry._id, { status: "removed" });
-    return null;
+    return "removed";
   },
 });

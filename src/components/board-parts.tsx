@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { formatUsd, timeAgo } from "@/lib/format";
+import { MAX_BID_CENTS } from "@/lib/pricing";
 
 export function ClaimBar({
   priceToClaimTopCents,
@@ -21,7 +22,9 @@ export function ClaimBar({
           onClick={onClaim}
           className="rounded-xl bg-gold px-4 py-2 text-sm font-black text-black transition hover:brightness-110 active:scale-95"
         >
-          Claim top acc for {formatUsd(priceToClaimTopCents)}
+          {priceToClaimTopCents > MAX_BID_CENTS
+            ? `Bid ${formatUsd(MAX_BID_CENTS)} toward top`
+            : `Claim top acc for ${formatUsd(priceToClaimTopCents)}`}
         </button>
       </div>
     </header>
