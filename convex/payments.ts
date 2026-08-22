@@ -406,16 +406,7 @@ export const refundPayment = internalMutation({
     if (!payment) return "recorded";
     if (payment.status === "refunded") return "refunded";
 
-    if (payment.status === "paid") {
-      const entry = await ctx.db.get(payment.entryId);
-      if (entry) {
-        await ctx.db.patch(entry._id, {
-          totalCents: Math.max(0, entry.totalCents - payment.amountCents),
-        });
-      }
-      await bumpRevenue(ctx, -payment.amountCents);
-    }
-
+    // Mark refunded first so the recompute below only sees remaining bids.
     await ctx.db.patch(payment._id, {
       status: "refunded",
       orderId: payment.orderId ?? args.orderId,
@@ -423,6 +414,29 @@ export const refundPayment = internalMutation({
       refundStatus: "succeeded",
       refundUpdatedAt: Date.now(),
     });
+
+    if (payment.status === "paid") {
+      const entry = await ctx.db.get(payment.entryId);
+      if (entry) {
+        // Ties go to whoever reached a total first (compareEntries), so
+        // lastBidAt must be restored from the payments still paid instead of
+        // pointing at the refunded bid.
+        const remaining = await ctx.db
+          .query("payments")
+          .withIndex("by_entry", (q) => q.eq("entryId", entry._id))
+          .collect();
+        const paidAts = remaining
+          .filter((p) => p.status === "paid")
+          .map((p) => p.paidAt ?? p.createdAt);
+        await ctx.db.patch(entry._id, {
+          totalCents: Math.max(0, entry.totalCents - payment.amountCents),
+          lastBidAt:
+            paidAts.length > 0 ? Math.min(...paidAts) : entry.lastBidAt,
+        });
+      }
+      await bumpRevenue(ctx, -payment.amountCents);
+    }
+
     return "refunded";
   },
 });

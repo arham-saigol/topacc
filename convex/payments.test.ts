@@ -179,6 +179,39 @@ describe("payment lifecycle", () => {
     expect(boardAfter).toEqual([]);
   });
 
+  it("restores the tie-break time when a later partial bid is refunded", async () => {
+    const t = setup();
+    vi.useFakeTimers({ now: BASE_TIME });
+    await pay(t, { handle: "aaa", amountCents: 1000, ip: "5.6.7.1", eventId: "tie_1" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    // bbb reaches $1000 after aaa, so aaa holds the rank on the tie.
+    await pay(t, { handle: "bbb", amountCents: 1000, ip: "5.6.7.2", eventId: "tie_2" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const boostId = await t.mutation(internal.payments.createPendingPayment, {
+      handle: "aaa",
+      amountCents: 500,
+      ip: "5.6.7.1",
+    });
+    await t.mutation(internal.payments.markPaid, {
+      eventId: "tie_3",
+      paymentId: boostId,
+      currency: "USD",
+    });
+
+    expect(
+      await t.mutation(internal.payments.refundPayment, {
+        eventId: "tie_refund",
+        paymentId: boostId,
+      }),
+    ).toBe("refunded");
+
+    // Back at $1000 each, aaa still outranks bbb because it got there first,
+    // not last at its refunded bid's timestamp.
+    const board = await t.query(api.entries.board, { limit: 10 });
+    expect(board.map((e) => e.handle)).toEqual(["aaa", "bbb"]);
+    expect(board.map((e) => e.totalCents)).toEqual([1000, 1000]);
+  });
+
   it("records an early reversal and prevents a later completion from crediting", async () => {
     const t = setup();
     const paymentId = await t.mutation(internal.payments.createPendingPayment, {
@@ -427,7 +460,7 @@ describe("admin removal", () => {
     process.env.ADMIN_PASSWORD = "hunter2";
     try {
       const t = setup();
-      for (let attempt = 0; attempt < 10; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         await expect(
           t.mutation(api.admin.findEntry, {
             password: "wrong",
@@ -435,12 +468,20 @@ describe("admin removal", () => {
           }),
         ).resolves.toBe("UNAUTHORIZED");
       }
+      // Exhausted budget throttles further wrong guesses...
+      await expect(
+        t.mutation(api.admin.findEntry, {
+          password: "wrong",
+          handle: "anything",
+        }),
+      ).resolves.toBe("RATE_LIMITED");
+      // ...but never locks out the correct password.
       await expect(
         t.mutation(api.admin.findEntry, {
           password: "hunter2",
           handle: "anything",
         }),
-      ).resolves.toBe("RATE_LIMITED");
+      ).resolves.toBe(null);
     } finally {
       delete process.env.ADMIN_PASSWORD;
     }
